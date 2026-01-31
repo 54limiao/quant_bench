@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 VLLM_USE_MODELSCOPE=True vllm serve /workspace/lim42@xiaopeng.com/github/quant_example/Qwen3-8B --port 8001
