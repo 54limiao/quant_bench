@@ -88,7 +88,7 @@ oneshot(
     recipe=recipe,
     max_seq_length=MAX_SEQUENCE_LENGTH,
     num_calibration_samples=NUM_CALIBRATION_SAMPLES,
-    save_compressed=False,
+    save_compressed=True,
     trust_remote_code_model=True,
 )
 
@@ -102,11 +102,6 @@ input_ids = tokenizer("Hello my name is", return_tensors="pt").input_ids.to(
 output = model.generate(input_ids, max_new_tokens=20)
 print(tokenizer.decode(output[0]))
 print("==========================================\n\n")
-
-# Save weight only model for test.
-SAVE_DIR_WEIGHTONLY = MODEL_ID + "-R4-gptq-W8-weightonly"
-model.to(torch.float32).save_pretrained(SAVE_DIR_WEIGHTONLY, save_compressed=False)
-tokenizer.save_pretrained(SAVE_DIR_WEIGHTONLY)
 
 # Save to disk.
 SAVE_DIR_QUANT = MODEL_ID + "-R4-gptq-W8A8-static"
