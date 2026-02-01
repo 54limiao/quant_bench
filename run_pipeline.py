@@ -719,58 +719,84 @@ def main():
     logger.info(f"阶段1完成 ({len(trans_outputs)} 个转换)")
 
     # 阶段2: 并行执行量化和评测
-    total_tasks = len(trans_outputs) * len(quant_configs)
+    total_baseline = len(trans_outputs) + 1
+    total_quant = len(trans_outputs) * len(quant_configs)
+    total_tasks = total_baseline + total_quant
     max_workers = len(eval_config['gpu_resources']['devices']) // eval_config['gpu_resources']['tensor_parallel_size']
-    logger.info(f"阶段2 - 并行启动 {total_tasks} 个任务 (并发数: {max_workers})")
+    logger.info(f"阶段2 - 并行启动 {total_tasks} 个任务 (基线: {total_baseline}, 量化: {total_quant}, 并发: {max_workers})")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     max_workers = len(eval_config['gpu_resources']['devices']) // eval_config['gpu_resources']['tensor_parallel_size']
 
-    def process_task(task_idx, trans_cfg, trans_output, quant_cfg):
-        """处理单个任务：量化 + 评测"""
-        task_name = f"{trans_cfg['name']}-{quant_cfg['name']}"
-        logger.info(f"[{task_idx + 1}/{len(trans_outputs) * len(quant_configs)}] 开始: {task_name}")
-
-        try:
-            # 执行量化
-            quant_output = run_quantization(trans_output, quant_cfg)
-
-            # 执行评测
-            results = run_evaluation(quant_output, eval_config, dataset_path, task_idx, len(trans_outputs) * len(quant_configs))
-
-            # 记录结果
-            result = {
-                'transform': trans_cfg['name'],
-                'quantization': quant_cfg['name'],
-                'model_path': quant_output,
-                'mmlu': results.get('mmlu', 0.0),
-                'gsm8k': results.get('gsm8k', 0.0),
-            }
-            logger.success(f"[{task_idx + 1}/{len(trans_outputs) * len(quant_configs)}] 完成: {task_name}")
-            return result
-        except Exception as e:
-            logger.error(f"[{task_idx + 1}/{len(trans_outputs) * len(quant_configs)}] 失败: {task_name} - {e}")
-            return None
+    def build_result(transform_name, quant_name, model_path, eval_results):
+        """构建结果字典，动态包含所有评测字段"""
+        result = {
+            'transform': transform_name,
+            'quantization': quant_name,
+            'model_path': model_path,
+        }
+        # 动态添加所有评测结果字段
+        for key, value in eval_results.items():
+            result[key] = value
+        return result
 
     # 提交所有任务
     task_idx = 0
     futures = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 第一步：提交基线模型评测任务
+        baseline_models = [('original', base_model)]
+        baseline_models.extend([(cfg['name'], out) for cfg, out in trans_outputs])
+        
+        for model_name, model_path in baseline_models:
+            current_idx = task_idx
+            def eval_baseline(idx=current_idx, name=model_name, path=model_path):
+                try:
+                    logger.info(f"[基线 {idx + 1}/{total_baseline}] 评测: {name}")
+                    results = run_evaluation(path, eval_config, dataset_path, idx, total_baseline)
+                    result = build_result(name, 'baseline', path, results)
+                    logger.success(f"[基线 {idx + 1}/{total_baseline}] 完成: {name}")
+                    return result
+                except Exception as e:
+                    logger.error(f"[基线 {idx + 1}/{total_baseline}] 失败: {name} - {e}")
+                    return None
+            futures.append(executor.submit(eval_baseline))
+            task_idx += 1
+        
+        # 第二步：提交量化+评测任务
         for trans_cfg, trans_output in trans_outputs:
             for quant_cfg in quant_configs:
-                future = executor.submit(process_task, task_idx, trans_cfg, trans_output, quant_cfg)
-                futures.append(future)
+                current_idx = task_idx
+                trans_name = trans_cfg['name']
+                quant_name = quant_cfg['name']
+                def process_quant(idx=current_idx, t_name=trans_name, q_name=quant_name, t_out=trans_output, q_cfg=quant_cfg):
+                    try:
+                        task_name = f"{t_name}-{q_name}"
+                        logger.info(f"[量化 {idx - total_baseline + 1}/{total_quant}] 量化+评测: {task_name}")
+
+                        quant_output = run_quantization(t_out, q_cfg)
+                        results = run_evaluation(quant_output, eval_config, dataset_path, idx, total_tasks)
+
+                        result = build_result(t_name, q_name, quant_output, results)
+                        logger.success(f"[量化 {idx - total_baseline + 1}/{total_quant}] 完成: {task_name}")
+                        return result
+                    except Exception as e:
+                        logger.error(f"[量化 {idx - total_baseline + 1}/{total_quant}] 失败: {task_name} - {e}")
+                        return None
+
+                futures.append(executor.submit(process_quant))
                 task_idx += 1
 
-        # 等待任务完成，每完成一个就保存结果
+        # 等待任务完成，收集结果
         for future in as_completed(futures):
             result = future.result()
             if result:
                 all_results.append(result)
-                # 立即保存结果
-                dataset_name = eval_config['dataset_name']
-                save_summary_csv(all_results, args.output_csv, dataset_name)
+
+        # 所有任务完成后统一保存结果
+        dataset_name = eval_config['dataset_name']
+        save_summary_csv(all_results, args.output_csv, dataset_name)
 
     logger.success(f"所有任务完成! 结果: {args.output_csv}")
 
