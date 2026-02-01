@@ -18,4 +18,5 @@ quant_modifiers:
         targets: [Linear]
 
 save_compressed: false
+original_config_json: true
 weight_only: true
