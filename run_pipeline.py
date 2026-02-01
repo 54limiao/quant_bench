@@ -683,22 +683,15 @@ def main():
     print(f"  日志: {LOGS_DIR}")
     print(f"{'='*60}\n")
 
-    # 验证所有转换配置的 input_model 一致且存在
-    base_model = None
-    for i, trans_cfg in enumerate(trans_configs):
-        if 'input_model' not in trans_cfg:
-            raise RuntimeError(f"转换配置 {trans_cfg.get('name', i)} 缺少 input_model 字段")
-        
-        model_path = Path(trans_cfg['input_model'])
-        if not model_path.exists():
-            raise RuntimeError(f"基础模型路径不存在: {model_path}")
-        
-        # 检查是否配置一致
-        if base_model is None:
-            base_model = str(model_path)
-        elif base_model != str(model_path):
-            raise RuntimeError(f"转换配置的 input_model 不一致: {base_model} vs {model_path}")
-    
+    # 从评测配置获取基础模型路径
+    if 'base_model' not in eval_config:
+        raise RuntimeError(f"评测配置缺少 base_model 字段")
+
+    base_model = Path(eval_config['base_model'])
+    if not base_model.exists():
+        raise RuntimeError(f"基础模型路径不存在: {base_model}")
+
+    base_model_str = str(base_model)
     logger.info(f"基础模型路径: {base_model}")
 
     # 存储所有结果
@@ -713,7 +706,7 @@ def main():
     trans_outputs = []
     for trans_cfg in trans_configs:
         logger.info(f"阶段1 - 转换: {trans_cfg['name']}")
-        trans_output = run_transform(trans_cfg, base_model)
+        trans_output = run_transform(trans_cfg, base_model_str)
         trans_outputs.append((trans_cfg, trans_output))
 
     logger.info(f"阶段1完成 ({len(trans_outputs)} 个转换)")
@@ -746,7 +739,7 @@ def main():
     futures = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 第一步：提交基线模型评测任务
-        baseline_models = [('original', base_model)]
+        baseline_models = [('original', base_model_str)]
         baseline_models.extend([(cfg['name'], out) for cfg, out in trans_outputs])
         
         for model_name, model_path in baseline_models:

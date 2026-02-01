@@ -10,4 +10,3 @@ quant_modifiers:
 save_compressed: False
 original_config_json: True
 dtype: float32
-input_model: ./data/models/Qwen/Qwen3-8B
