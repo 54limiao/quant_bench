@@ -1,0 +1,9 @@
+torch>=2.0.0
+transformers>=4.57.0
+datasets>=2.20.0
+
+llmcompressor>=0.13.0
+vllm>=0.15.0
+evalscope>=0.6.0
+
+pyyaml>=6.0
