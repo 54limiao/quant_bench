@@ -38,7 +38,7 @@ dataset_name: mmlu_gsm8k_128
 base_model: ./data/models/Qwen/Qwen3-8B  # 模型路径
 gpu_resources:
   devices: [0,1,2,3]
-  tensor_parallel_size: 1  # TP=1时每个任务用1个GPU，TP=2时用2个GPU
+  pipeline_parallel_size: 1  # PP=1时每个任务用1个GPU，PP=2时用2个GPU
 ```
 
 ## 目录结构
@@ -71,4 +71,4 @@ outputs/{dataset_name}/reports/{model_name}/
 - ✅ 自动跳过已存在的模型和结果
 - ✅ 量化和评测任务并行执行，一键完成复杂量化测评流程
 - ✅ 临时py脚本保存到logs目录，可debug
-- ✅ GPU自动并行分配（按tensor_parallel_size）
+- ✅ GPU自动并行分配（按pipeline_parallel_size, R4与tensor_parallel不兼容）

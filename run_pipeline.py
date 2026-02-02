@@ -53,14 +53,14 @@ port_allocator = PortAllocator()
 
 # GPU 分配器（线程安全）
 class GPUAllocator:
-    def __init__(self, devices: List[int], tensor_parallel_size: int = 1):
+    def __init__(self, devices: List[int], pipeline_parallel_size: int = 1):
         self.devices = devices
-        self.tensor_parallel_size = tensor_parallel_size
+        self.pipeline_parallel_size = pipeline_parallel_size
         self.lock = Lock()
         # 计算可用的 GPU 组
-        self.num_groups = len(devices) // tensor_parallel_size
+        self.num_groups = len(devices) // pipeline_parallel_size
         if self.num_groups == 0:
-            raise ValueError(f"GPU 数量 ({len(devices)}) 不足以支持 tensor_parallel_size={tensor_parallel_size}")
+            raise ValueError(f"GPU 数量 ({len(devices)}) 不足以支持 pipeline_parallel_size={pipeline_parallel_size}")
         # 记录每个 GPU 组是否被占用
         self.group_in_use = [False] * self.num_groups
         self.condition = None  # 延迟初始化
@@ -84,8 +84,8 @@ class GPUAllocator:
                 for group_idx in range(self.num_groups):
                     if not self.group_in_use[group_idx]:
                         self.group_in_use[group_idx] = True
-                        start_gpu = group_idx * self.tensor_parallel_size
-                        gpus = self.devices[start_gpu:start_gpu + self.tensor_parallel_size]
+                        start_gpu = group_idx * self.pipeline_parallel_size
+                        gpus = self.devices[start_gpu:start_gpu + self.pipeline_parallel_size]
                         logger.debug(f"分配 GPU 组 {group_idx}: {gpus}")
                         return gpus
                 
@@ -109,7 +109,7 @@ class GPUAllocator:
                 first_gpu = gpus[0]
                 try:
                     idx = self.devices.index(first_gpu)
-                    group_idx = idx // self.tensor_parallel_size
+                    group_idx = idx // self.pipeline_parallel_size
                     if 0 <= group_idx < self.num_groups:
                         self.group_in_use[group_idx] = False
                         logger.debug(f"释放 GPU 组 {group_idx}: {gpus}")
@@ -470,7 +470,7 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
 
     # 获取 GPU 资源配置
     gpu_resources = eval_config.get('gpu_resources', {})
-    tensor_parallel_size = gpu_resources.get('tensor_parallel_size', 1)
+    pipeline_parallel_size = gpu_resources.get('pipeline_parallel_size', 1)
 
     # 如果没有指定 gpu_devices，使用全局分配器分配
     allocated_gpus = None
@@ -481,7 +481,7 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
         else:
             # 降级：使用默认设备
             devices = gpu_resources.get('devices', [0])
-            gpu_devices = devices[:tensor_parallel_size]
+            gpu_devices = devices[:pipeline_parallel_size]
 
     # 获取输出目录配置
     work_dir = eval_config.get('output', {}).get('work_dir', 'outputs')
@@ -506,13 +506,13 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
             gpu_allocator.release(allocated_gpus)
         return results
 
-    logger.info(f"评测 {model_name} (GPU:{gpu_devices}, TP:{tensor_parallel_size})")
+    logger.info(f"评测 {model_name} (GPU:{gpu_devices}, PP:{pipeline_parallel_size})")
 
     # 启动 vLLM 服务
     vllm_cmd = [
         "vllm", "serve", model_path,
         f"--port={port}",
-        f"--tensor-parallel-size={tensor_parallel_size}"
+        f"--pipeline-parallel-size={pipeline_parallel_size}"
     ]
 
     env = os.environ.copy()
@@ -762,11 +762,11 @@ def main():
 
     # 初始化全局 GPU 分配器
     gpu_devices = eval_config['gpu_resources']['devices']
-    tensor_parallel_size = eval_config['gpu_resources']['tensor_parallel_size']
-    gpu_allocator = GPUAllocator(gpu_devices, tensor_parallel_size)
+    pipeline_parallel_size = eval_config['gpu_resources']['pipeline_parallel_size']
+    gpu_allocator = GPUAllocator(gpu_devices, pipeline_parallel_size)
     max_workers = gpu_allocator.num_groups
     
-    logger.info(f"GPU 配置: {len(gpu_devices)} 个 GPU, TP={tensor_parallel_size}, 最大并发={max_workers}")
+    logger.info(f"GPU 配置: {len(gpu_devices)} 个 GPU, PP={pipeline_parallel_size}, 最大并发={max_workers}")
 
     # 根据 dataset_name 生成 CSV 文件名
     dataset_name = eval_config['dataset_name']

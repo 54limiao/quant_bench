@@ -25,7 +25,7 @@ eval_config:
 
 gpu_resources:
   devices: [0,1,2,3]
-  tensor_parallel_size: 1
+  pipeline_parallel_size: 1
 
 output:
   work_dir: outputs/mmlu_gsm8k_1024
