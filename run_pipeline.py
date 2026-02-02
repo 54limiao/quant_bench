@@ -257,6 +257,9 @@ def build_quant_script(input_model: str, output_model: str, config: Dict[str, An
     # 读取是否使用原始 config.json
     original_config_json = config.get('original_config_json', False)
 
+    # 读取是否需要修改 w4a8 config.json（将 num_bits 从 4 改为 8）
+    w4a8_config_json = config.get('w4a8_config_json', False)
+
     script = f"""
 import torch
 import yaml
@@ -385,6 +388,33 @@ if {original_config_json}:
         # 复制原始配置
         shutil.copy2(original_config_path, new_config_path)
         print(f"Replaced config.json with original from {{original_config_path}}")
+
+# 当 w4a8_config_json=True 时，修改 config.json 中的 num_bits 从 4 改为 8
+if {w4a8_config_json}:
+    import json
+    config_path = os.path.join(SAVE_DIR, "config.json")
+    
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            config_data = json.load(f)
+        
+        # 修改 quantization_config 中的 num_bits
+        if 'quantization_config' in config_data:
+            quant_config = config_data['quantization_config']
+            
+            # 遍历所有 config_groups
+            if 'config_groups' in quant_config:
+                for group_name, group_config in quant_config['config_groups'].items():
+                    if 'weights' in group_config and 'num_bits' in group_config['weights']:
+                        old_bits = group_config['weights']['num_bits']
+                        if old_bits == 4:
+                            group_config['weights']['num_bits'] = 8
+                            print(f"Modified {{group_name}} weights num_bits from 4 to 8")
+            
+            # 保存修改后的配置
+            with open(config_path, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            print(f"Updated config.json for w4a8 compatibility (stored as int8, loaded as w8a8)")
 """
 
     return script
