@@ -36,6 +36,180 @@ logger.add(
     level="INFO"
 )
 
+# 添加 rich 进度显示
+from rich.console import Console
+from rich.table import Table
+from rich.live import Live
+from rich.text import Text
+from enum import Enum
+
+class TaskStatus(Enum):
+    PENDING = "⏳ 等待"
+    RUNNING = "🔄 进行中"
+    COMPLETED = "✅ 完成"
+    SKIPPED = "⏭️ 跳过"
+    FAILED = "❌ 失败"
+
+class TaskTracker:
+    """任务状态追踪器（线程安全）"""
+    def __init__(self):
+        self.tasks = {}  # task_id -> {name, status, gpu, message}
+        self.lock = Lock()
+        self.console = Console()
+        self.live = None
+        self.start_time = time.time()
+    
+    def add_task(self, task_id: str, name: str, task_type: str):
+        """添加新任务"""
+        with self.lock:
+            self.tasks[task_id] = {
+                'name': name,
+                'type': task_type,
+                'status': TaskStatus.PENDING,
+                'gpu': None,
+                'message': '',
+                'start_time': None,
+                'end_time': None,
+            }
+    
+    def update_status(self, task_id: str, status: TaskStatus, gpu: List[int] = None, message: str = ''):
+        """更新任务状态"""
+        with self.lock:
+            if task_id is not None and task_id in self.tasks:
+                self.tasks[task_id]['status'] = status
+                if gpu is not None:
+                    self.tasks[task_id]['gpu'] = gpu
+                if message:
+                    self.tasks[task_id]['message'] = message
+                
+                if status == TaskStatus.RUNNING and self.tasks[task_id]['start_time'] is None:
+                    self.tasks[task_id]['start_time'] = time.time()
+                elif status in [TaskStatus.COMPLETED, TaskStatus.SKIPPED, TaskStatus.FAILED]:
+                    self.tasks[task_id]['end_time'] = time.time()
+    
+    def generate_table(self) -> Table:
+        """生成进度表格"""
+        table = Table(title="🚀 量化评测流水线进度", show_header=True, header_style="bold magenta")
+        table.add_column("ID", style="dim", width=4)
+        table.add_column("类型", width=8)
+        table.add_column("任务名称", width=40)
+        table.add_column("状态", width=12)
+        table.add_column("GPU", width=8)
+        table.add_column("耗时", width=10)
+        table.add_column("备注", width=30)
+        
+        with self.lock:
+            # 按类型和ID排序
+            sorted_tasks = sorted(
+                self.tasks.items(),
+                key=lambda x: (
+                    0 if x[1]['type'] == '基线' else 1,
+                    x[0]
+                )
+            )
+            
+            for task_id, info in sorted_tasks:
+                # 状态样式
+                status = info['status']
+                if status == TaskStatus.COMPLETED:
+                    status_text = Text(status.value, style="bold green")
+                elif status == TaskStatus.RUNNING:
+                    status_text = Text(status.value, style="bold yellow")
+                elif status == TaskStatus.FAILED:
+                    status_text = Text(status.value, style="bold red")
+                elif status == TaskStatus.SKIPPED:
+                    status_text = Text(status.value, style="bold cyan")
+                else:
+                    status_text = Text(status.value, style="dim")
+                
+                # GPU 显示
+                gpu_text = ",".join(map(str, info['gpu'])) if info['gpu'] else "-"
+                
+                # 耗时计算
+                if info['start_time']:
+                    if info['end_time']:
+                        elapsed = info['end_time'] - info['start_time']
+                    else:
+                        elapsed = time.time() - info['start_time']
+                    elapsed_text = f"{elapsed:.1f}s"
+                else:
+                    elapsed_text = "-"
+                
+                # 任务名称截断
+                name = info['name']
+                if len(name) > 38:
+                    name = name[:35] + "..."
+                
+                table.add_row(
+                    task_id.split('-')[-1],  # 只显示数字ID
+                    info['type'],
+                    name,
+                    status_text,
+                    gpu_text,
+                    elapsed_text,
+                    info['message'][:28] + "..." if len(info['message']) > 30 else info['message']
+                )
+            
+            # 添加统计信息
+            stats = self.get_statistics()
+            total_time = time.time() - self.start_time
+            
+            table.caption = (
+                f"总任务: {stats['total']} | "
+                f"完成: {stats['completed']} | "
+                f"跳过: {stats['skipped']} | "
+                f"进行中: {stats['running']} | "
+                f"等待: {stats['pending']} | "
+                f"失败: {stats['failed']} | "
+                f"总耗时: {total_time:.1f}s"
+            )
+        
+        return table
+    
+    def get_statistics(self) -> Dict[str, int]:
+        """获取统计信息"""
+        stats = {
+            'total': len(self.tasks),
+            'pending': 0,
+            'running': 0,
+            'completed': 0,
+            'skipped': 0,
+            'failed': 0,
+        }
+        
+        for info in self.tasks.values():
+            status = info['status']
+            if status == TaskStatus.PENDING:
+                stats['pending'] += 1
+            elif status == TaskStatus.RUNNING:
+                stats['running'] += 1
+            elif status == TaskStatus.COMPLETED:
+                stats['completed'] += 1
+            elif status == TaskStatus.SKIPPED:
+                stats['skipped'] += 1
+            elif status == TaskStatus.FAILED:
+                stats['failed'] += 1
+        
+        return stats
+    
+    def start_live_display(self):
+        """启动实时显示"""
+        self.live = Live(self.generate_table(), refresh_per_second=2, console=self.console)
+        self.live.start()
+    
+    def stop_live_display(self):
+        """停止实时显示"""
+        if self.live:
+            self.live.stop()
+    
+    def refresh(self):
+        """刷新显示"""
+        if self.live:
+            self.live.update(self.generate_table())
+
+# 全局任务追踪器
+task_tracker = TaskTracker()
+
 # 全局端口分配器（线程安全）
 class PortAllocator:
     def __init__(self, start_port=8001):
@@ -126,6 +300,18 @@ def load_yaml_config(config_path: str) -> Dict[str, Any]:
     path = Path(config_path)
     with open(path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+
+    # 检查配置是否为空，添加 dummy 键避免后续处理出错
+    if config is None:
+        config = {'_empty': True}
+    
+    # 从文件名提取 name 和 output_suffix
+    # 如果配置文件中没有这些字段，则使用文件名
+    filename = path.stem  # 不含扩展名的文件名
+    if 'name' not in config:
+        config['name'] = filename
+    if 'output_suffix' not in config:
+        config['output_suffix'] = f'-{filename}'
     
     # 解析路径字段，支持相对路径
     if 'input_model' in config:
@@ -186,7 +372,7 @@ def run_transform(config: Dict[str, Any], base_model: str) -> str:
     return output_model
 
 
-def run_quantization(input_model: str, quant_config: Dict[str, Any], gpu_devices: List[int] = None) -> str:
+def run_quantization(input_model: str, quant_config: Dict[str, Any], gpu_devices: List[int] = None, task_id: str = None) -> str:
     """执行模型量化"""
     quant_name = quant_config['name']
 
@@ -195,9 +381,13 @@ def run_quantization(input_model: str, quant_config: Dict[str, Any], gpu_devices
     output_model = input_model + quant_suffix
     model_name = Path(output_model).name
 
+    # 更新任务状态
+    task_tracker.update_status(task_id, TaskStatus.RUNNING, gpu_devices, "正在量化...")
+
     # 检查模型是否已存在
     if Path(output_model).exists():
         logger.info(f"跳过 {quant_name} (模型已存在)")
+        task_tracker.update_status(task_id, TaskStatus.SKIPPED, message="模型已存在")
         return output_model
 
     logger.info(f"量化 {quant_name} (GPU: {gpu_devices})")
@@ -220,7 +410,11 @@ def run_quantization(input_model: str, quant_config: Dict[str, Any], gpu_devices
         env['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpu_devices))
 
     with open(log_file, 'w') as log_f:
-        subprocess.run([sys.executable, str(tmp_script)], check=True, cwd=PROJECT_ROOT, stdout=log_f, stderr=log_f, env=env)
+        result = subprocess.run([sys.executable, str(tmp_script)], check=False, cwd=PROJECT_ROOT, stdout=log_f, stderr=log_f, env=env)
+    
+    if result.returncode != 0:
+        task_tracker.update_status(task_id, TaskStatus.FAILED, message="量化失败")
+        raise RuntimeError(f"量化失败: {quant_name}")
     
     # 成功后将脚本和日志重命名为隐藏文件
     hidden_script = LOGS_DIR / f".{model_name}_quant.py"
@@ -402,11 +596,15 @@ if {w4a8_config_json}:
             # 遍历所有 config_groups
             if 'config_groups' in quant_config:
                 for group_name, group_config in quant_config['config_groups'].items():
-                    if 'weights' in group_config and 'num_bits' in group_config['weights']:
-                        old_bits = group_config['weights']['num_bits']
-                        if old_bits == 4:
-                            group_config['weights']['num_bits'] = 8
-                            print(f"Modified {{group_name}} weights num_bits from 4 to 8")
+                    # 只修改包含 input_activations 的配置组（激活量化组）
+                    if 'input_activations' in group_config and group_config['input_activations'] is not None:
+                        if 'weights' in group_config and 'num_bits' in group_config['weights']:
+                            old_bits = group_config['weights']['num_bits']
+                            if old_bits == 4:
+                                group_config['weights']['num_bits'] = 8
+                                print(f"Modified {{group_name}} weights num_bits from 4 to 8 (W4A8 group)")
+                    else:
+                        print(f"Skipped {{group_name}} (weight-only quantization, no input_activations)")
             
             # 保存修改后的配置
             with open(config_path, 'w') as f:
@@ -490,7 +688,7 @@ def wait_for_service(port: int, timeout: int = 400) -> bool:
     return False
 
 
-def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: str, task_idx: int, total_tasks: int, gpu_devices: List[int] = None) -> Dict[str, float]:
+def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: str, task_idx: int, total_tasks: int, gpu_devices: List[int] = None, task_id: str = None) -> Dict[str, float]:
     """执行评测"""
     model_name = Path(model_path).name
     port = find_available_port()
@@ -528,10 +726,16 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
     if report_path.exists():
         logger.info(f"跳过 {model_name} (结果已存在)")
         results = parse_evaluation_results(model_name, output_dir)
+        # 更新任务状态
+        score = results.get('overall_score', 0)
+        task_tracker.update_status(task_id, TaskStatus.SKIPPED, message=f"分数: {score}")
         # 释放 GPU
         if allocated_gpus is not None and gpu_allocator is not None:
             gpu_allocator.release(allocated_gpus)
         return results
+
+    # 更新任务状态
+    task_tracker.update_status(task_id, TaskStatus.RUNNING, gpu_devices, "启动vLLM服务...")
 
     logger.info(f"评测 {model_name} (GPU:{gpu_devices})")
 
@@ -545,14 +749,12 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
     env = os.environ.copy()
     # 将GPU列表转换为逗号分隔的字符串
     env['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpu_devices))
-    env['VLLM_USE_MODELSCOPE'] = 'true'
 
     # 保存 vLLM 启动命令到 sh 文件
     vllm_sh_file = LOGS_DIR / f"{model_name}_vllm.sh"
     with open(vllm_sh_file, 'w') as f:
         f.write(f"#!/bin/bash\n")
         f.write(f"export CUDA_VISIBLE_DEVICES={','.join(map(str, gpu_devices))}\n")
-        f.write(f"export VLLM_USE_MODELSCOPE=true\n")
         f.write(f"{' '.join(vllm_cmd)}\n")
 
     # 重定向 vLLM 日志到文件
@@ -561,16 +763,21 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
 
     # 等待服务真正可用
     logger.info(f"等待 vLLM 服务启动 (端口: {port})...")
+    task_tracker.update_status(task_id, TaskStatus.RUNNING, gpu_devices, "等待vLLM启动...")
+    
     service_ready = wait_for_service(port)
     if not service_ready:
         logger.error(f"vLLM 服务启动超时 (端口: {port})")
         vllm_process.terminate()
         vllm_process.wait()
+        task_tracker.update_status(task_id, TaskStatus.FAILED, message="vLLM启动超时")
         # 释放 GPU
         if allocated_gpus is not None and gpu_allocator is not None:
             gpu_allocator.release(allocated_gpus)
         raise RuntimeError(f"vLLM 服务启动超时 (端口: {port})")
     logger.info(f"vLLM 服务启动成功 {model_name} (端口: {port}，GPU: {gpu_devices})")
+    
+    task_tracker.update_status(task_id, TaskStatus.RUNNING, gpu_devices, "正在评测...")
 
     try:
         # 运行评测
@@ -581,10 +788,18 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
 
         # 重定向 evalscope 日志到文件
         with open(eval_log_file, 'w') as eval_log:
-            result = subprocess.run([sys.executable, str(tmp_script)], check=True, cwd=PROJECT_ROOT, stdout=eval_log, stderr=eval_log)
+            result = subprocess.run([sys.executable, str(tmp_script)], check=False, cwd=PROJECT_ROOT, stdout=eval_log, stderr=eval_log)
+
+        if result.returncode != 0:
+            task_tracker.update_status(task_id, TaskStatus.FAILED, message="评测失败")
+            raise RuntimeError(f"评测失败: {model_name}")
 
         # 解析结果
         results = parse_evaluation_results(model_name, output_dir)
+        
+        # 更新任务状态
+        overall_score = results.get('overall_score', 0)
+        task_tracker.update_status(task_id, TaskStatus.COMPLETED, message=f"分数: {overall_score:.4f}")
         
         # 成功后将所有相关文件重命名为隐藏文件
         hidden_vllm_sh = LOGS_DIR / f".{model_name}_vllm.sh"
@@ -599,6 +814,9 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
         
         return results
 
+    except Exception as e:
+        task_tracker.update_status(task_id, TaskStatus.FAILED, message=str(e)[:30])
+        raise
     finally:
         # 停止 vLLM 服务
         vllm_process.terminate()
@@ -693,7 +911,7 @@ def parse_evaluation_results(model_name: str, output_dir: Path = None) -> Dict[s
 
 
 def save_summary_csv(all_results: List[Dict[str, Any]], output_path: str, dataset_name: str):
-    """保存结果汇总 CSV（增量写入）"""
+    """保存结果汇总 CSV（增量写入，新结果按 overall_score 降序排列）"""
     import csv
 
     if not all_results:
@@ -726,7 +944,16 @@ def save_summary_csv(all_results: List[Dict[str, Any]], output_path: str, datase
                 key = (row['transform'], row['quantization'], row['dataset'])
                 existing_rows[key] = row
 
-    # 写入数据
+    # 新结果按 overall_score 降序排序
+    def get_overall_score(result):
+        try:
+            return float(result.get('overall_score', 0))
+        except (ValueError, TypeError):
+            return 0.0
+    
+    all_results.sort(key=get_overall_score, reverse=True)
+
+    # 写入数据（追加模式）
     write_mode = 'a' if file_exists else 'w'
     with open(output_path, write_mode, newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -736,7 +963,6 @@ def save_summary_csv(all_results: List[Dict[str, Any]], output_path: str, datase
             writer.writeheader()
         
         # 写入结果
-        updated_count = 0
         for result in all_results:
             key = (result['transform'], result['quantization'], dataset_name)
             
@@ -744,17 +970,22 @@ def save_summary_csv(all_results: List[Dict[str, Any]], output_path: str, datase
             result['dataset'] = dataset_name
             result['timestamp'] = timestamp
             
-            # 如果存在重复，更新（重新写入所有数据）
-            if key in existing_rows:
-                updated_count += 1
-            
             writer.writerow(result)
     
-    # 如果有更新，提示用户
-    if updated_count > 0:
-        logger.info(f"结果已保存到: {output_path} (更新了 {updated_count} 条记录)")
-    else:
-        logger.info(f"结果已保存到: {output_path} (新增 {len(all_results)} 条记录)")
+    logger.info(f"结果已保存到: {output_path} (新增 {len(all_results)} 条记录)")
+
+
+def build_result(transform_name: str, quant_name: str, model_path: str, eval_results: Dict[str, float]) -> Dict[str, Any]:
+    """构建结果字典，动态包含所有评测字段"""
+    result = {
+        'transform': transform_name,
+        'quantization': quant_name,
+        'model_path': model_path,
+    }
+    # 动态添加所有评测结果字段
+    for key, value in eval_results.items():
+        result[key] = value
+    return result
 
 
 def main():
@@ -866,67 +1097,80 @@ def main():
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def build_result(transform_name, quant_name, model_path, eval_results):
-        """构建结果字典，动态包含所有评测字段"""
-        result = {
-            'transform': transform_name,
-            'quantization': quant_name,
-            'model_path': model_path,
-        }
-        # 动态添加所有评测结果字段
-        for key, value in eval_results.items():
-            result[key] = value
-        return result
+    # 初始化任务追踪器
+    task_idx = 0
+    baseline_models = [('original', base_model_str)]
+    baseline_models.extend([(cfg['name'], out) for cfg, out in trans_outputs])
+    
+    # 添加基线任务
+    for model_name, model_path in baseline_models:
+        task_id = f"baseline-{task_idx}"
+        task_tracker.add_task(task_id, model_name, "基线")
+        task_idx += 1
+    
+    # 添加量化任务
+    for trans_cfg, trans_output in trans_outputs:
+        for quant_cfg in quant_configs:
+            task_id = f"quant-{task_idx}"
+            task_name = f"{trans_cfg['name']}-{quant_cfg['name']}"
+            task_tracker.add_task(task_id, task_name, "量化")
+            task_idx += 1
+    
+    # 启动实时进度显示
+    task_tracker.start_live_display()
 
     # 提交所有任务
     task_idx = 0
     futures = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 第一步：提交基线模型评测任务（GPU 由 run_evaluation 内部通过 allocator 分配）
-        baseline_models = [('original', base_model_str)]
-        baseline_models.extend([(cfg['name'], out) for cfg, out in trans_outputs])
-        
+        # 第一步：提交基线模型评测任务
         for model_name, model_path in baseline_models:
             current_idx = task_idx
-            def eval_baseline(idx=current_idx, name=model_name, path=model_path):
+            task_id = f"baseline-{current_idx}"
+            
+            def eval_baseline(idx=current_idx, tid=task_id, name=model_name, path=model_path):
                 try:
-                    logger.info(f"[基线 {idx + 1}/{total_baseline}] 评测: {name}")
+                    task_tracker.update_status(tid, TaskStatus.RUNNING, message="准备评测...")
                     # GPU 由 run_evaluation 内部自动分配和释放
-                    results = run_evaluation(path, eval_config, dataset_path, idx, total_baseline)
+                    results = run_evaluation(path, eval_config, dataset_path, idx, total_baseline, task_id=tid)
                     result = build_result(name, 'baseline', path, results)
                     logger.success(f"[基线 {idx + 1}/{total_baseline}] 完成: {name}")
                     return result
                 except Exception as e:
                     logger.error(f"[基线 {idx + 1}/{total_baseline}] 失败: {name} - {e}")
+                    task_tracker.update_status(tid, TaskStatus.FAILED, message=str(e)[:30])
                     return None
             futures.append(executor.submit(eval_baseline))
             task_idx += 1
         
-        # 第二步：提交量化+评测任务（GPU 由各函数内部通过 allocator 分配）
+        # 第二步：提交量化+评测任务
         for trans_cfg, trans_output in trans_outputs:
             for quant_cfg in quant_configs:
                 current_idx = task_idx
+                task_id = f"quant-{current_idx}"
                 trans_name = trans_cfg['name']
                 quant_name = quant_cfg['name']
                 
-                def process_quant(idx=current_idx, t_name=trans_name, q_name=quant_name, t_out=trans_output, q_cfg=quant_cfg):
+                def process_quant(idx=current_idx, tid=task_id, t_name=trans_name, q_name=quant_name, t_out=trans_output, q_cfg=quant_cfg):
                     gpus = None
                     try:
                         task_name = f"{t_name}-{q_name}"
                         
                         # 分配 GPU
                         gpus = gpu_allocator.allocate()
-                        logger.info(f"[量化 {idx - total_baseline + 1}/{total_quant}] 量化+评测: {task_name} (GPU: {gpus})")
+                        task_tracker.update_status(tid, TaskStatus.RUNNING, gpus, "准备量化...")
 
-                        quant_output = run_quantization(t_out, q_cfg, gpus)
+                        quant_output = run_quantization(t_out, q_cfg, gpus, task_id=tid)
+                        task_tracker.update_status(tid, TaskStatus.RUNNING, gpus, "准备评测...")
                         # 评测时传入已分配的 GPU，避免重复分配
-                        results = run_evaluation(quant_output, eval_config, dataset_path, idx, total_tasks, gpus)
+                        results = run_evaluation(quant_output, eval_config, dataset_path, idx, total_tasks, gpus, task_id=tid)
 
                         result = build_result(t_name, q_name, quant_output, results)
                         logger.success(f"[量化 {idx - total_baseline + 1}/{total_quant}] 完成: {task_name}")
                         return result
                     except Exception as e:
                         logger.error(f"[量化 {idx - total_baseline + 1}/{total_quant}] 失败: {t_name}-{q_name} - {e}")
+                        task_tracker.update_status(tid, TaskStatus.FAILED, message=str(e)[:30])
                         return None
                     finally:
                         # 确保 GPU 被释放
@@ -941,6 +1185,17 @@ def main():
             result = future.result()
             if result:
                 all_results.append(result)
+            # 刷新进度显示
+            task_tracker.refresh()
+
+        # 停止实时显示
+        task_tracker.stop_live_display()
+        
+        # 显示最终结果表格
+        print("\n" + "="*80)
+        print("最终结果:")
+        print("="*80)
+        task_tracker.console.print(task_tracker.generate_table())
 
         # 所有任务完成后统一保存结果
         dataset_name = eval_config['dataset_name']
