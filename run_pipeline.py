@@ -463,7 +463,7 @@ def find_available_port() -> int:
     return port_allocator.allocate()
 
 
-def wait_for_service(port: int, timeout: int = 300) -> bool:
+def wait_for_service(port: int, timeout: int = 400) -> bool:
     """等待服务启动，检查端口是否可访问"""
     import socket
     import urllib.request
@@ -533,7 +533,7 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
             gpu_allocator.release(allocated_gpus)
         return results
 
-    logger.info(f"评测 {model_name} (GPU:{gpu_devices}, PP:{pipeline_parallel_size})")
+    logger.info(f"评测 {model_name} (GPU:{gpu_devices})")
 
     # 启动 vLLM 服务
     vllm_cmd = [
@@ -560,13 +560,17 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
         vllm_process = subprocess.Popen(vllm_cmd, env=env, stdout=vllm_log, stderr=vllm_log)
 
     # 等待服务真正可用
-    if not wait_for_service(port):
+    logger.info(f"等待 vLLM 服务启动 (端口: {port})...")
+    service_ready = wait_for_service(port)
+    if not service_ready:
+        logger.error(f"vLLM 服务启动超时 (端口: {port})")
         vllm_process.terminate()
         vllm_process.wait()
         # 释放 GPU
         if allocated_gpus is not None and gpu_allocator is not None:
             gpu_allocator.release(allocated_gpus)
         raise RuntimeError(f"vLLM 服务启动超时 (端口: {port})")
+    logger.info(f"vLLM 服务启动成功 {model_name} (端口: {port}，GPU: {gpu_devices})")
 
     try:
         # 运行评测
