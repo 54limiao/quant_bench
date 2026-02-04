@@ -86,6 +86,8 @@ class TaskTracker:
                     self.tasks[task_id]['start_time'] = time.time()
                 elif status in [TaskStatus.COMPLETED, TaskStatus.SKIPPED, TaskStatus.FAILED]:
                     self.tasks[task_id]['end_time'] = time.time()
+        
+        self.refresh()
     
     def generate_table(self) -> Table:
         """生成进度表格"""
@@ -194,7 +196,7 @@ class TaskTracker:
     
     def start_live_display(self):
         """启动实时显示"""
-        self.live = Live(self.generate_table(), refresh_per_second=2, console=self.console)
+        self.live = Live(self.generate_table(), refresh_per_second=4, console=self.console)  # 提高刷新频率
         self.live.start()
     
     def stop_live_display(self):
@@ -205,7 +207,11 @@ class TaskTracker:
     def refresh(self):
         """刷新显示"""
         if self.live:
-            self.live.update(self.generate_table())
+            try:
+                self.live.update(self.generate_table())
+            except Exception:
+                # 忽略刷新过程中的异常（例如终端大小变化）
+                pass
 
 # 全局任务追踪器
 task_tracker = TaskTracker()
@@ -445,11 +451,8 @@ def build_quant_script(input_model: str, output_model: str, config: Dict[str, An
     # 从配置中读取 dtype（默认 auto）
     dtype = config.get('dtype', 'auto')
 
-    # 读取是否使用原始 config.json
+    # 是否使用原始 config.json 替换
     original_config_json = config.get('original_config_json', False)
-
-    # 读取是否需要修改 w4a8 config.json（将 num_bits 从 4 改为 8）
-    w4a8_config_json = config.get('w4a8_config_json', False)
 
     script = f"""
 import torch
@@ -580,8 +583,7 @@ if {original_config_json}:
         shutil.copy2(original_config_path, new_config_path)
         print(f"Replaced config.json with original from {{original_config_path}}")
 
-# 当 w4a8_config_json=True 时，修改 config.json 中的 num_bits 从 4 改为 8
-if {w4a8_config_json}:
+if True:
     import json
     config_path = os.path.join(SAVE_DIR, "config.json")
     
@@ -1185,8 +1187,8 @@ def main():
             result = future.result()
             if result:
                 all_results.append(result)
-            # 刷新进度显示
-            task_tracker.refresh()
+            # 移除手动刷新调用，因为 update_status 已经自动刷新
+            # task_tracker.refresh()
 
         # 停止实时显示
         task_tracker.stop_live_display()
