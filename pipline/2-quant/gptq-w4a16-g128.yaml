@@ -17,12 +17,6 @@ quant_modifiers:
           group_size: 128
           strategy: group
           observer: mse
-          observer_kwargs:
-            maxshrink: 0.1
-            patience: 10
-            averaging_constant: 0.05
-            grid: 128.0
-            norm: 2.0
         # input_activations: null
         targets: [Linear]
 
